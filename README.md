@@ -73,7 +73,7 @@ cd Baseline4SolvingSchrodingerEquation
 python main.py
 # 在服务器上如果需要指定显卡（示例为指定0卡，如果需要使用其他卡设置为其他数值），请使用
 CUDA_VISIBLE_DEVICES=0 python main.py
-# 提交问价将保存到log子文件下
+# 提交文件将保存到log子文件下
 # 将baseline_submission.csv文件提交到Kaggle就完成了一次提交
 ```
 

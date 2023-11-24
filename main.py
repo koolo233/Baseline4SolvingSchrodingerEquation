@@ -203,8 +203,8 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
         df_dx_upper_imag = gradients(output_upper[:, 1:2], boundary_upper_data)[:, 1:2]
 
         # 周期边界条件：直接数值损失
-        boundary_value_loss_real = torch.mean((output_lower[:, 0:1] - output_lower[:, 0:1]) ** 2)
-        boundary_value_loss_imag = torch.mean((output_lower[:, 1:2] - output_lower[:, 1:2]) ** 2)
+        boundary_value_loss_real = torch.mean((output_lower[:, 0:1] - output_upper[:, 0:1]) ** 2)
+        boundary_value_loss_imag = torch.mean((output_lower[:, 1:2] - output_upper[:, 1:2]) ** 2)
 
         # 周期边界条件：梯度损失
         boundary_gradient_loss_real = torch.mean((df_dx_lower_real - df_dx_upper_real) ** 2)

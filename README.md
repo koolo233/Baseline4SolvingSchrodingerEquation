@@ -33,6 +33,8 @@ cd Baseline4SolvingSchrodingerEquation
 4. `test.csv`：测试数据集，与Kaggle上的一致
 5. `.gitignore`：git忽略文件
 6. `PINNs-组内专题.pptx`：PINNs的介绍PPT
+7. `gt.csv`: 真实解数据集，用于计算误差
+8. `evaluation.py`: 用于计算误差的函数
 
 当运行本Baseline后会生成log文件夹，该文件夹中的文件介绍如下：
 1. `model.pth`：训练好的模型，可以直接用于测试。

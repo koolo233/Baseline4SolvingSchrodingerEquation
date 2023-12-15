@@ -6,6 +6,8 @@
 File Name: main.py
 Author: Xiaomeng Wu
 Created Date: 2023-10-
+
+Update: Zijiang Yang
 """
 
 import os
@@ -16,6 +18,37 @@ import numpy as np
 import pandas as pd
 import torch.optim as optim
 import matplotlib.pyplot as plt
+
+from utils import *
+
+import argparse
+
+parser = argparse.ArgumentParser()
+# global
+parser.add_argument('--seed', type=int, default=0, help='random seed')
+parser.add_argument('--additional_file_name', type=str, default='time', help='additional file name')
+# training
+parser.add_argument('--max_steps', type=int, default=20, help='max training step')
+parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
+parser.add_argument('--lr_sch', type=str, default=None, help='learning rate scheduler')
+# loss function
+parser.add_argument('--gpinn', action='store_true', help='using gradient enhanced loss')
+parser.add_argument('--gpinn_w', type=float, default=1.0, help='weight of gradient enhanced loss')
+# model
+parser.add_argument('--n_layers', type=int, default=4, help='number of layers')
+parser.add_argument('--n_neurons', type=int, default=100, help='number of neurons')
+parser.add_argument('--activation', type=str, default='tanh', help='activation function')
+# data
+parser.add_argument('--n_pde', type=int, default=2000, help='number of samples to supervise PDE')
+parser.add_argument('--n_ic', type=int, default=100, help='number of samples to supervise IC')
+parser.add_argument('--n_bc', type=int, default=100, help='number of samples to supervise BC')
+
+args = parser.parse_args()
+
+if args.additional_file_name == "time":
+    # using current time
+    import time
+    args.additional_file_name = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
 
 # device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -35,6 +68,10 @@ class PINN(nn.Module):
         """
         super(PINN, self).__init__()
 
+        # check if num_neurons is int
+        if isinstance(num_neurons, int):
+            num_neurons = [num_neurons] * num_layers
+
         # 输入层
         self.input_layer = nn.Linear(input_dim, num_neurons[0])
 
@@ -43,7 +80,18 @@ class PINN(nn.Module):
         layers = []
         for i in range(1, num_layers):
             layers.append(nn.Linear(num_neurons[i-1], num_neurons[i]))
-            layers.append(nn.Tanh())
+            if args.activation == 'tanh':
+                layers.append(nn.Tanh())
+            elif args.activation == 'sigmoid':
+                layers.append(nn.Sigmoid())
+            elif args.activation == 'silu':
+                layers.append(nn.SiLU())
+            elif args.activation == 'adaptive_tanh':
+                layers.append(AdaptiveTanh())
+            elif args.activation == 'adaptive_silu':
+                layers.append(AdaptiveSILU())
+            else:
+                raise NotImplementedError
         self.hidden_layers = nn.Sequential(*layers)
 
         # 输出层
@@ -79,8 +127,8 @@ def create_data():
     # 创建Initial Condition采样点数据集
     # Initial Condition的t一定为0，x从[-5,5]随机采样
     # 总样本点数为100
-    t_initial = np.zeros((100, 1))
-    x_initial = np.random.uniform(low=x_lower, high=x_upper, size=(100, 1))
+    t_initial = np.zeros((args.n_ic, 1))
+    x_initial = np.random.uniform(low=x_lower, high=x_upper, size=(args.n_ic, 1))
     # 生成tensor
     t_initial_tensor = torch.from_numpy(t_initial).float().to(device)
     x_initial_tensor = torch.from_numpy(x_initial).float().to(device)
@@ -92,9 +140,9 @@ def create_data():
     # 创建Boundary Condition采样点数据集
     # 由于本次比赛的赛题为周期边界条件，因此需要在x的上下边界采样相同的x序列，t则在整个区间随机采样
     # 总样本点数为100
-    x_boundary_lower = -5 * np.ones((100, 1))  # 下边界
-    x_boundary_upper = 5 * np.ones((100, 1))  # 上边界
-    t = np.random.uniform(low=t_lower, high=t_upper, size=(100, 1))  # 随机采样的t
+    x_boundary_lower = -5 * np.ones((args.n_bc, 1))  # 下边界
+    x_boundary_upper = 5 * np.ones((args.n_bc, 1))  # 上边界
+    t = np.random.uniform(low=t_lower, high=t_upper, size=(args.n_bc, 1))  # 随机采样的t
 
     # 创建tensor
     x_lower_tensor = torch.from_numpy(x_boundary_lower).float().requires_grad_(True).to(device)
@@ -109,8 +157,8 @@ def create_data():
     # 创建PDE采样点数据集
     # 需要在区间内任意采样
     # 总样本点数为2000
-    x_collocation = np.random.uniform(low=x_lower, high=x_upper, size=(2000, 1))
-    t_collocation = np.random.uniform(low=t_lower, high=t_upper, size=(2000, 1))
+    x_collocation = np.random.uniform(low=x_lower, high=x_upper, size=(args.n_pde, 1))
+    t_collocation = np.random.uniform(low=t_lower, high=t_upper, size=(args.n_pde, 1))
     x_collocation_tensor = torch.from_numpy(x_collocation).float().requires_grad_(True).to(device)
     t_collocation_tensor = torch.from_numpy(t_collocation).float().requires_grad_(True).to(device)
     pde_data = torch.cat([t_collocation_tensor, x_collocation_tensor],1)
@@ -130,7 +178,7 @@ def create_data():
     plt.ylabel('t')
     plt.title('Collocation Points')
     plt.legend()
-    plt.savefig('./log/Collocation Points.png')
+    plt.savefig(f'./log/{args.additional_file_name}/Collocation Points.png')
     plt.clf()
     plt.close()
 
@@ -169,8 +217,25 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
     boundary_losses = []  # 边界条件损失记录器
     pde_losses = []  # PDE损失记录器
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)  # 初始化优化器
-    MAX_STEPS = 20  # 最大训练步数
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)  # 初始化优化器
+
+    # 学习率衰减
+    if args.lr_sch is None:
+        scheduler = None
+    elif args.lr_sch == 'cos':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.max_steps)  # 余弦退火
+    elif args.lr_sch == 'step':
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=int(args.max_steps*0.2), gamma=0.8) # 步进式衰减
+    elif args.lr_sch == 'exp':
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)  # 指数衰减
+    elif args.lr_sch == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=100)
+    elif args.lr_sch == 'onecycle':
+        scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr*1.5, steps_per_epoch=1, epochs=args.max_steps)
+    else:
+        raise NotImplementedError(f"Learning rate scheduler {args.lr_sch} is not implemented.")
+
+    MAX_STEPS = args.max_steps  # 最大训练步数
     model.train()
 
     # 训练主循环
@@ -203,8 +268,8 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
         df_dx_upper_imag = gradients(output_upper[:, 1:2], boundary_upper_data)[:, 1:2]
 
         # 周期边界条件：直接数值损失
-        boundary_value_loss_real = torch.mean((output_lower[:, 0:1] - output_lower[:, 0:1]) ** 2)
-        boundary_value_loss_imag = torch.mean((output_lower[:, 1:2] - output_lower[:, 1:2]) ** 2)
+        boundary_value_loss_real = torch.mean((output_lower[:, 0:1] - output_upper[:, 0:1]) ** 2)
+        boundary_value_loss_imag = torch.mean((output_lower[:, 1:2] - output_upper[:, 1:2]) ** 2)
 
         # 周期边界条件：梯度损失
         boundary_gradient_loss_real = torch.mean((df_dx_lower_real - df_dx_upper_real) ** 2)
@@ -217,31 +282,34 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
         # -------------
         # PDE损失
         # -------------
-        output = model(pde_data)  # PDE监督样本结果
-        output_real = output[:, 0:1]  # 实部预测结果
-        output_imag = output[:, 1:2]  # 虚部预测结果
+        if args.gpinn:
+            pde_loss = gpinn_loss(model, gradients, pde_data, args.gpinn_w)
+        else:
+            output = model(pde_data)  # PDE监督样本结果
+            output_real = output[:, 0:1]  # 实部预测结果
+            output_imag = output[:, 1:2]  # 虚部预测结果
 
-        # 计算实部对输入的一阶梯度
-        df_dtx_real = gradients(output_real, pde_data)
-        df_dt_real = df_dtx_real[:, 0:1]
-        df_dx_real = df_dtx_real[:, 1:2]
+            # 计算实部对输入的一阶梯度
+            df_dtx_real = gradients(output_real, pde_data)
+            df_dt_real = df_dtx_real[:, 0:1]
+            df_dx_real = df_dtx_real[:, 1:2]
 
-        # 计算虚部对输入一阶梯度
-        df_dtx_imag = gradients(output_imag, pde_data)
-        df_dt_imag = df_dtx_imag[:, 0:1]
-        df_dx_imag = df_dtx_imag[:, 1:2]
+            # 计算虚部对输入一阶梯度
+            df_dtx_imag = gradients(output_imag, pde_data)
+            df_dt_imag = df_dtx_imag[:, 0:1]
+            df_dx_imag = df_dtx_imag[:, 1:2]
 
-        # 计算实部对输入坐标x的二阶梯度
-        df_dxx_real = gradients(df_dx_real, pde_data)[:, 1:2]
-        # 计算虚部对输入坐标x的二阶梯度
-        df_dxx_imag = gradients(df_dx_imag, pde_data)[:, 1:2]
+            # 计算实部对输入坐标x的二阶梯度
+            df_dxx_real = gradients(df_dx_real, pde_data)[:, 1:2]
+            # 计算虚部对输入坐标x的二阶梯度
+            df_dxx_imag = gradients(df_dx_imag, pde_data)[:, 1:2]
 
-        # 计算实部PDE损失
-        pde_real = -df_dt_imag + 0.5 * df_dxx_real + (output_real ** 2 + output_imag ** 2) * output_real
-        # 计算虚部PDE损失
-        pde_imag = df_dt_real + 0.5 * df_dxx_imag + (output_real ** 2 + output_imag ** 2) * output_imag
-        # 计算总损失
-        pde_loss = torch.mean(pde_real**2)+torch.mean(pde_imag**2)
+            # 计算实部PDE损失
+            pde_real = -df_dt_imag + 0.5 * df_dxx_real + (output_real ** 2 + output_imag ** 2) * output_real
+            # 计算虚部PDE损失
+            pde_imag = df_dt_real + 0.5 * df_dxx_imag + (output_real ** 2 + output_imag ** 2) * output_imag
+            # 计算总损失
+            pde_loss = torch.mean(pde_real**2)+torch.mean(pde_imag**2)
 
         # 误差累加
         loss = initial_loss + boundary_loss + pde_loss
@@ -261,13 +329,23 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
             MAX_STEPS, step, loss.item(), initial_loss.item(), boundary_loss.item(), pde_loss.item()
         )
         # 输出到log文件
-        with open('log/loss_PINN.txt', 'a') as f:
+        with open(f'log/{args.additional_file_name}/loss_PINN.txt', 'a') as f:
             f.write(print_str + '\n')
         # 输出到cmd
         print(print_str)
 
+        # 学习率衰减
+        if scheduler is not None:
+            if args.lr_sch == 'plateau':
+                scheduler.step(metrics=loss)
+            elif args.lr_sch == 'exp':
+                if step % int(MAX_STEPS/10) == 0:
+                    scheduler.step()
+            else:
+                scheduler.step()
+
     # 保存模型
-    torch.save(model.state_dict(), "./log/model.pth")
+    torch.save(model.state_dict(), f"./log/{args.additional_file_name}/model.pth")
 
     # 绘制损失图像
     plt.plot(range(1, len(losses) + 1), losses, label='Loss')
@@ -277,7 +355,7 @@ def train(model, pde_data, initial_data, boundary_lower_data, boundary_upper_dat
     plt.xlabel('Step')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig('log/loss_plot.png')
+    plt.savefig(f'log/{args.additional_file_name}/loss_plot.png')
 
 
 def testing(test):
@@ -300,21 +378,21 @@ def testing(test):
     df["t"] = test['t']  # 创建t列
     df["x"] = test['x']  # 创建x列
     df["pred"] = pred  # 创建pred列
-    df.to_csv("log/baseline_submission.csv", index=False)
+    df.to_csv(f"log/{args.additional_file_name}/baseline_submission.csv", index=False)
 
 
 if __name__ == '__main__':
     # ----------
     # 固定随机数
     # ----------
-    np.random.seed(0)  # numpy seed
-    random.seed(0)  # random seed
-    torch.manual_seed(0)  # pytorch seed
-    torch.cuda.manual_seed(0)  # pytorch gpu seed
+    np.random.seed(args.seed)  # numpy seed
+    random.seed(args.seed)  # random seed
+    torch.manual_seed(args.seed)  # pytorch seed
+    torch.cuda.manual_seed(args.seed)  # pytorch gpu seed
 
     # 创建日志文件夹
-    if not os.path.exists('log'):
-        os.makedirs('log')
+    if not os.path.exists(f'log/{args.additional_file_name}'):
+        os.makedirs(f'log/{args.additional_file_name}')
 
     # ----------
     # 生成训练数据
@@ -325,7 +403,7 @@ if __name__ == '__main__':
     # ----------
     # 创建模型
     # ----------
-    model = PINN(num_layers=4, num_neurons=[100, 100, 100, 100]).to(device)
+    model = PINN(num_layers=args.n_layers, num_neurons=args.n_neurons).to(device)
     print("Init model done...")
     print(model)
 
@@ -340,4 +418,4 @@ if __name__ == '__main__':
     # ----------
     testing(pd.read_csv('test.csv'))  # prediction
     print("Testing Done...")
-    print("prediction file is saved as log/baseline_submission.csv")
+    print(f"prediction file is saved as log/{args.additional_file_name}/baseline_submission.csv")

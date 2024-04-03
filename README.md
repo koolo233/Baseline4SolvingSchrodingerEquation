@@ -1,5 +1,9 @@
 # PINNs for Solving Schrodinger Equation
 
+## Archive this repo
+
+本项目不再更新，所有数据均已整理到[Kaggle](https://www.kaggle.com/datasets/zijiangyang1116/solve-pdes-with-ai-schrdinger-equation/data)。
+
 ## 运行环境
 
 首先需要使用conda配置环境，本Baseline基于Python 3.8，PyTorch1.13.0。初赛在个人电脑上，显存大于2G就能正常训练以及测试。
